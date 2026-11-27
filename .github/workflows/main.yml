@@ -34,31 +34,17 @@ jobs:
             Pop-Location
           }
 
-      - name: Ensure Newtonsoft.Json is referenced in AsarSharp
+      - name: Restore NuGet packages (packages.config + PackageReference)
         shell: pwsh
         run: |
-          $csproj = "AsarSharp/AsarSharp.csproj"
-          if (Test-Path $csproj) {
-            [xml]$xml = Get-Content $csproj
-            $hasNewtonsoft = $xml.SelectNodes("//PackageReference") | Where-Object { $_.Include -eq "Newtonsoft.Json" }
-            if (-not $hasNewtonsoft) {
-              $itemGroup = $xml.Project.ItemGroup | Select-Object -First 1
-              if (-not $itemGroup) {
-                $itemGroup = $xml.CreateElement("ItemGroup")
-                $xml.Project.AppendChild($itemGroup) | Out-Null
-              }
-              $pkg = $xml.CreateElement("PackageReference")
-              $pkg.SetAttribute("Include", "Newtonsoft.Json")
-              $pkg.SetAttribute("Version", "13.0.3")
-              $itemGroup.AppendChild($pkg) | Out-Null
-              $xml.Save((Resolve-Path $csproj).Path)
-            }
-          }
+          $nugetExe = "$env:RUNNER_TEMP\nuget.exe"
+          Invoke-WebRequest -Uri "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe" -OutFile $nugetExe
+          & $nugetExe restore Wand-Enhancer.sln -PackagesDirectory packages -NonInteractive
+          dotnet restore Wand-Enhancer.sln
 
-      - name: Restore and Build Solution
+      - name: Build Solution
         shell: pwsh
         run: |
-          dotnet restore Wand-Enhancer.sln --force
           dotnet build Wand-Enhancer.sln -c Release --no-restore
 
       - name: Upload Build Artifact
