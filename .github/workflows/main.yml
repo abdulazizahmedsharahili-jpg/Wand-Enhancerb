@@ -3,7 +3,7 @@ name: Build Windows App
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ "master" ]
 
 jobs:
   build:
@@ -29,16 +29,37 @@ jobs:
             corepack enable
             corepack prepare pnpm@latest --activate
             Push-Location web-panel
-            pnpm install --frozen-lockfile
+            pnpm install --no-frozen-lockfile
             pnpm run build
             Pop-Location
+          }
+
+      - name: Ensure Newtonsoft.Json is referenced in AsarSharp
+        shell: pwsh
+        run: |
+          $csproj = "AsarSharp/AsarSharp.csproj"
+          if (Test-Path $csproj) {
+            [xml]$xml = Get-Content $csproj
+            $hasNewtonsoft = $xml.SelectNodes("//PackageReference") | Where-Object { $_.Include -eq "Newtonsoft.Json" }
+            if (-not $hasNewtonsoft) {
+              $itemGroup = $xml.Project.ItemGroup | Select-Object -First 1
+              if (-not $itemGroup) {
+                $itemGroup = $xml.CreateElement("ItemGroup")
+                $xml.Project.AppendChild($itemGroup) | Out-Null
+              }
+              $pkg = $xml.CreateElement("PackageReference")
+              $pkg.SetAttribute("Include", "Newtonsoft.Json")
+              $pkg.SetAttribute("Version", "13.0.3")
+              $itemGroup.AppendChild($pkg) | Out-Null
+              $xml.Save((Resolve-Path $csproj).Path)
+            }
           }
 
       - name: Restore and Build Solution
         shell: pwsh
         run: |
-          dotnet restore Wand-Enhancer.sln
-          dotnet build Wand-Enhancer.sln -c Release
+          dotnet restore Wand-Enhancer.sln --force
+          dotnet build Wand-Enhancer.sln -c Release --no-restore
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
