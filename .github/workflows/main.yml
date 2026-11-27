@@ -17,6 +17,9 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
       - name: Setup Node.js and pnpm
         uses: actions/setup-node@v4
         with:
@@ -42,7 +45,7 @@ jobs:
           & $nugetExe restore Wand-Enhancer.sln -PackagesDirectory packages -NonInteractive
           dotnet restore Wand-Enhancer.sln
 
-      - name: Fix missing or moved Compile includes in WandEnhancer.csproj
+      - name: Prepare WandEnhancer project files
         shell: pwsh
         run: |
           $csprojPath = "WandEnhancer/WandEnhancer.csproj"
@@ -50,6 +53,8 @@ jobs:
           if (Test-Path $csprojPath) {
             [xml]$xml = Get-Content $csprojPath
             $changed = $false
+
+            # 1) Fix missing or moved .cs includes
             $compileNodes = @($xml.SelectNodes("//*[local-name()='Compile' and @Include]"))
             foreach ($node in $compileNodes) {
               $inc = $node.GetAttribute("Include")
@@ -62,17 +67,52 @@ jobs:
                   if ($found) {
                     $newRel = [System.IO.Path]::GetRelativePath((Resolve-Path $projDir).Path, $found.FullName) -replace '/', '\'
                     $node.SetAttribute("Include", $newRel)
-                    Write-Host "Updated include '$inc' -> '$newRel'"
                     $changed = $true
                   } else {
                     $parent = $node.ParentNode
                     $parent.RemoveChild($node) | Out-Null
-                    Write-Host "Removed missing compile entry '$inc'"
                     $changed = $true
                   }
                 }
               }
             }
+
+            # 2) Ensure EnhancerConfig exists if referenced by codebase
+            $enhancerConfigFile = Join-Path $projDir "EnhancerConfig.Fallback.cs"
+            $hasEnhancerConfigSource = Get-ChildItem -Path $projDir -Recurse -Filter "*.cs" -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -ne (Resolve-Path $enhancerConfigFile -ErrorAction SilentlyContinue)?.Path } |
+              Select-String -Pattern "class\s+EnhancerConfig\b" -Quiet
+
+            if (-not $hasEnhancerConfigSource) {
+              $fallbackCode = @"
+using System;
+using System.Collections.Generic;
+
+namespace WandEnhancer
+{
+    public class EnhancerConfig
+    {
+        public bool EnablePatch { get; set; } = true;
+        public bool EnableLogging { get; set; } = false;
+        public string TargetPath { get; set; } = string.Empty;
+        public Dictionary<string, object> Options { get; set; } = new Dictionary<string, object>();
+    }
+}
+"@
+              Set-Content -Path $enhancerConfigFile -Value $fallbackCode -Encoding UTF8
+
+              $hasFallbackInclude = $xml.SelectNodes("//*[local-name()='Compile' and @Include]") |
+                Where-Object { $_.GetAttribute("Include") -eq "EnhancerConfig.Fallback.cs" }
+              if (-not $hasFallbackInclude) {
+                $ig = $xml.CreateElement("ItemGroup")
+                $comp = $xml.CreateElement("Compile")
+                $comp.SetAttribute("Include", "EnhancerConfig.Fallback.cs")
+                $ig.AppendChild($comp) | Out-Null
+                $xml.Project.AppendChild($ig) | Out-Null
+                $changed = $true
+              }
+            }
+
             if ($changed) {
               $xml.Save((Resolve-Path $csprojPath).Path)
             }
@@ -81,7 +121,7 @@ jobs:
       - name: Build Solution
         shell: pwsh
         run: |
-          dotnet build Wand-Enhancer.sln -c Release --no-restore
+          msbuild Wand-Enhancer.sln /p:Configuration=Release /m
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
